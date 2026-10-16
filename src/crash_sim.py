@@ -61,8 +61,13 @@ def _block_bootstrap(pool: np.ndarray, n: int, block: int, rng) -> np.ndarray:
     return np.concatenate([pool[s:s + block] for s in starts])[:n]
 
 
-def simulate_crashes(train_raw: pd.DataFrame, med_vol: float, vol_high_cut: float, seed, cfg: SimConfig = SimConfig()) -> SimSet:
-    """train_raw: timestamp + allowed inputs for the fold's training period only."""
+def simulate_crashes(train_raw: pd.DataFrame, med_vol: float, vol_high_cut: float, seed, cfg: SimConfig = SimConfig(),
+                     extra=None) -> SimSet:
+    """train_raw: timestamp + allowed inputs for the fold's training period only.
+
+    extra: optional callable(frame, simulated_price) -> DataFrame of additional
+    same-row features indexed by timestamp, appended before windowing.
+    """
     rng = np.random.default_rng(seed)
     tr = train_raw.reset_index(drop=True)
     opens = tr["open"].to_numpy(float)
@@ -106,6 +111,8 @@ def simulate_crashes(train_raw: pd.DataFrame, med_vol: float, vol_high_cut: floa
         frame = frame.iloc[30:].reset_index(drop=True)
         frame["timestamp"] = np.arange(1, len(frame) + 1)
         feats, _ = build_features_r2(frame)
+        if extra is not None:
+            feats = feats.join(extra(frame, price[30:]).loc[feats.index])
         arr = feats.to_numpy()
         # crash rows in the trimmed frame: original positions B+1 .. B+window -> labels need the next price
         crash_orig = np.arange(B + 1, B + 1 + cfg.window)

@@ -33,8 +33,10 @@ from sklearn.preprocessing import StandardScaler
 
 from src.crash_sim import simulate_crashes
 from src.data_r2 import REPO_ROOT, load_r2, verify_source_r2
-from src.features_r2 import FEATURE_NAMES_R2, build_features_r2, fit_regime_cutoffs, sample_timestamps
+from src.features_r2 import FEATURE_NAMES_R2, assign_regimes, fit_regime_cutoffs, sample_timestamps, windows
+from src.features_r3 import CLOSE_FEATURES, build_features_r3, close_features
 from src.models.logistic import sklearn_lr
+from src.models.lstm_attn import configure_torch, fit_lstm, predict_lstm
 
 CSV3 = REPO_ROOT / "KESTREL_EM_D01_round3.csv"
 OUT = REPO_ROOT / "outputs" / "local" / "divisha_round3"
@@ -66,10 +68,15 @@ def add_extra(base: np.ndarray) -> np.ndarray:
     return np.column_stack([base, ex])
 
 
-class Hybrid:
-    """LR + HGB on the same clipped standardized features, trained with MC crash rows."""
+LSTM_SEEDS = (42, 43, 44)
 
-    def __init__(self, X_raw, feats, y, train_ts, fold_index):
+
+class Hybrid:
+    """LR + HGB (+ optional attention LSTM) on clipped standardized, volatility-normalised
+    features, all trained with MC crash rows (LSTM: worst-group objective incl. sim_crash)."""
+
+    def __init__(self, X_raw, feats, y, train_ts, fold_index, use_lstm=False):
+        self.feats, self.use_lstm = feats, use_lstm
         tr = feats.loc[train_ts]
         base = tr.to_numpy()
         Xtr = add_extra(base)
@@ -78,8 +85,8 @@ class Hybrid:
         self.max_vol = float(tr["volatility_20"].max())
         cut = fit_regime_cutoffs(tr)
         train_raw = X_raw.loc[X_raw["timestamp"] <= max(train_ts)]
-        aug = simulate_crashes(train_raw, self.med_vol, cut.vol_high, [SEED, fold_index, 0])
-        self.stress = simulate_crashes(train_raw, self.med_vol, cut.vol_high, [SEED, fold_index, 1])
+        aug = simulate_crashes(train_raw, self.med_vol, cut.vol_high, [SEED, fold_index, 0], extra=close_features)
+        self.stress = simulate_crashes(train_raw, self.med_vol, cut.vol_high, [SEED, fold_index, 1], extra=close_features)
         self.sim_hashes = {"aug": aug.sha256, "stress": self.stress.sha256}
         Z = self._z(np.vstack([Xtr, add_extra(aug.W[:, -1, :])]))
         yy = np.concatenate([y.loc[train_ts].to_numpy().astype(int), aug.y])
@@ -89,14 +96,39 @@ class Hybrid:
         self.hgb = HistGradientBoostingClassifier(
             learning_rate=0.05, max_iter=150, max_leaf_nodes=7, min_samples_leaf=30, l2_regularization=1.0,
             early_stopping=False, random_state=SEED).fit(Z, yy, sample_weight=sw)
+        if use_lstm:
+            self.arr = self._z(add_extra(feats.to_numpy()))
+            self.pos = pd.Series(np.arange(len(feats)), index=feats.index)
+            W = np.concatenate([windows(self.arr, self.pos.loc[train_ts].to_numpy()), self._zw(aug.W)])
+            G = np.zeros((len(yy), 5), dtype=bool)
+            G[:n, :4] = assign_regimes(tr, cut).to_numpy()
+            G[n:, 4] = True
+            self.lstm = [fit_lstm(W, yy, seed, sample_weight=sw, groups=G, lam=0.5)[0] for seed in LSTM_SEEDS]
 
     def _z(self, X):
         return np.clip(self.scaler.transform(X), -CLIP_Z, CLIP_Z)
 
-    def predict(self, base: np.ndarray) -> dict:
-        Z = self._z(add_extra(base))
-        p_lr, p_hgb = self.lr.predict_proba(Z)[:, 1], self.hgb.predict_proba(Z)[:, 1]
-        return {"p": 0.5 * (p_lr + p_hgb), "p_lr": p_lr, "p_hgb": p_hgb}
+    def _zw(self, W):
+        n, L, F = W.shape
+        return self._z(add_extra(W.reshape(-1, F))).reshape(n, L, -1)
+
+    def _combine(self, Zrows, Zwin):
+        out = {"p_lr": self.lr.predict_proba(Zrows)[:, 1], "p_hgb": self.hgb.predict_proba(Zrows)[:, 1]}
+        parts = [out["p_lr"], out["p_hgb"]]
+        if self.use_lstm:
+            out["p_lstm"] = np.mean([predict_lstm(m, Zwin) for m in self.lstm], axis=0)
+            parts.append(out["p_lstm"])
+        out["p"] = np.mean(parts, axis=0)
+        return out
+
+    def predict_ts(self, ts) -> dict:
+        Zrows = self._z(add_extra(self.feats.loc[ts].to_numpy()))
+        Zwin = windows(self.arr, self.pos.loc[ts].to_numpy()) if self.use_lstm else None
+        return self._combine(Zrows, Zwin)
+
+    def predict_sim(self, W) -> dict:
+        Zw = self._zw(W)
+        return self._combine(Zw[:, -1, :], Zw if self.use_lstm else None)
 
 
 def policies(p, base, med_vol, max_vol) -> dict:
@@ -130,30 +162,35 @@ def backtest(s, r, cost) -> dict:
             "hit_rate": float(np.mean(np.sign(s[s != 0]) == np.sign(r[s != 0]))) if (s != 0).any() else None}
 
 
-def main():
+def main(argv=None):
+    use_lstm = argv is not None and "--lstm" in argv
+    tag = "v3_lstm" if use_lstm else "v2"
+    if use_lstm:
+        configure_torch(min(4, __import__("os").cpu_count() or 1))
     t0 = time.perf_counter()
-    hashes = verify_source_r2(CSV3)          # round-three file must equal the audited round-two data
+    hashes = verify_source_r2(CSV3)          # the round-three file
     X, y = load_r2(900, CSV3)
-    feats, n_warm = build_features_r2(X)
+    raw = pd.read_csv(CSV3)
+    feats, rec = build_features_r3(raw)      # current close rebuilt from rows <= t only (851-900)
+    n_warm = int(feats.index[0] - 1)
     sample = sample_timestamps(feats)
-    raw = pd.read_csv(CSV3)                  # evaluation only: realized next-day returns
-    price = raw.set_index("timestamp")["close"]
+    price = raw.set_index("timestamp")["close"]   # realized returns for backtests (labelled rows only)
     r_next = (price.shift(-1) / price - 1)   # NaN for t >= 850
 
     real, mc, diag = {}, {}, {}
     for i, (b0, b1) in enumerate(BLOCKS, start=1):
         train_ts = [t for t in sample if t <= b0 - 2]
         ev_ts = [t for t in sample if b0 <= t <= b1]
-        h = Hybrid(X, feats, y, train_ts, i)
+        h = Hybrid(X, feats, y, train_ts, i, use_lstm)
         base_ev = feats.loc[ev_ts].to_numpy()
-        pr = h.predict(base_ev)
+        pr = h.predict_ts(ev_ts)
         pol = policies(pr["p"], base_ev, h.med_vol, h.max_vol)
         r = r_next.loc[ev_ts].to_numpy()
         real[f"{b0}-{b1}"] = {k: {str(c): backtest(v, r, c) for c in COSTS} for k, v in pol.items()}
         # Monte Carlo crash paths (independent stress set, never trained on)
         st = h.stress
         base_st = st.W[:, -1, :]
-        ps = h.predict(base_st)
+        ps = h.predict_sim(st.W)
         pol_s = policies(ps["p"], base_st, h.med_vol, h.max_vol)
         res = {}
         for k, v in pol_s.items():
@@ -208,20 +245,20 @@ def main():
     # Final fit on all labelled samples (<= 850) and signal for 851-900.
     train_ts = [t for t in sample if t <= 850]
     pred_ts = list(range(851, 901))
-    h = Hybrid(X, feats, y, train_ts, 9)
+    h = Hybrid(X, feats, y, train_ts, 9, use_lstm)
     base_pr = feats.loc[pred_ts].to_numpy()
-    pr = h.predict(base_pr)
+    pr = h.predict_ts(pred_ts)
     pol = policies(pr["p"], base_pr, h.med_vol, h.max_vol)
     sig = np.clip(np.round(pol[chosen], 4), -1, 1)
     OUT.mkdir(parents=True, exist_ok=True)
-    sub = OUT / "submission_round3_signal.csv"
+    sub = OUT / f"submission_round3_signal_{tag}.csv"
     pd.DataFrame({"timestamp": pred_ts, "signal": sig}).to_csv(sub, index=False, lineterminator="\n")
     chk = pd.read_csv(sub)
     assert sub.read_text().splitlines()[0] == "timestamp,signal"
     assert chk["timestamp"].tolist() == pred_ts and len(chk) == 50
     assert chk["signal"].between(-1, 1).all() and np.isfinite(chk["signal"]).all()
-    detail = OUT / "round3_prediction_detail.csv"
-    pd.DataFrame({"timestamp": pred_ts, "p": pr["p"], "p_lr": pr["p_lr"], "p_hgb": pr["p_hgb"],
+    detail = OUT / f"round3_prediction_detail_{tag}.csv"
+    pd.DataFrame({"timestamp": pred_ts, **{k: v for k, v in pr.items()},
                   "volatility_20": base_pr[:, IDX["volatility_20"]], **{k: v for k, v in pol.items()}}).to_csv(
         detail, index=False, float_format="%.6g", lineterminator="\n")
     final = {"chosen": chosen, "train_last": 850, "n_train": len(train_ts), "sim": h.sim_hashes,
@@ -231,22 +268,32 @@ def main():
              "turnover": float(np.abs(np.diff(np.concatenate([[0], sig]))).sum()),
              "submission_sha256": hashlib.sha256(sub.read_bytes()).hexdigest(),
              "all_policy_signals_first5": {k: [float(x) for x in v[:5]] for k, v in pol.items()}}
-    res = {"dataset": hashes, "warmup_rows": n_warm, "blocks": BLOCKS, "costs": COSTS, "select_cost": SELECT_COST,
+    rb = rec["rebuilt"]
+    recon = {"rows_rebuilt": int(rb.sum()), "max_mom_vs_sma10_diff": float(np.nanmax(np.abs(rec["est_mom"][rb] - rec["est_sma10"][rb])))}
+    res = {"version": tag, "use_lstm": use_lstm, "close_reconstruction": recon, "features": list(feats.columns),
+           "dataset": hashes, "warmup_rows": n_warm, "blocks": BLOCKS, "costs": COSTS, "select_cost": SELECT_COST,
            "summary": summary, "chosen": chosen, "real": real, "mc": mc, "diag": diag, "final": final,
            "runtime_s": time.perf_counter() - t0}
-    JSON_PATH.write_text(json.dumps(res, indent=1) + "\n")
-    write_note(res, sub)
+    JSON_PATH.with_name(f"round3_results_{tag}.json").write_text(json.dumps(res, indent=1) + "\n")
+    write_note(res, sub, NOTE.with_name(f"round3_results_{tag}.md"))
     print(json.dumps({k: final[k] for k in ("chosen", "p_range", "signal_mean", "signal_min", "signal_max", "turnover")}))
     print("wrote", sub, flush=True)
 
 
-def write_note(res, sub):
+def write_note(res, sub, path):
     S, fn = res["summary"], res["final"]
-    L = ["# Round three: crash-aware hybrid signal (initial submission)\n",
+    model = "LR + HGB + attention LSTM (worst-group with sim_crash, 3 seeds)" if res["use_lstm"] else "LR + HGB"
+    L = [f"# Round three {res['version']}: crash-aware hybrid signal ({model})\n",
          f"Chosen policy: **{res['chosen']}**. Submission (local, not committed): `{sub.relative_to(REPO_ROOT)}`, "
          f"SHA-256 `{fn['submission_sha256']}`.\n",
          "Command: `python -m src.run_round3`. Data: round-three file, identical to the audited round-two data "
          f"(SHA-256 file `{res['dataset']['sha256_file']}`, CRLF form `{res['dataset']['sha256_crlf_normalised']}`).\n",
+         f"Features ({len(res['features'])}): the 18 round-two causal features, plus close-based same-row features "
+         f"({', '.join(CLOSE_FEATURES)}), plus 6 volatility-normalised versions inside the models. For 851–900 the current close is "
+         f"rebuilt from rows ≤ t only (close[t−5]·(1+momentum_5[t])); {res['close_reconstruction']['rows_rebuilt']} rows rebuilt, "
+         f"momentum vs sma_10 estimates agree within {res['close_reconstruction']['max_mom_vs_sma10_diff']:.3f}. "
+         "Validation: hiding 801–850 and rebuilding gives max error 0.044 (0.013%). The next close is never reconstructed, "
+         "and realized 851–900 returns are not computed or used for any choice.\n",
          "## Policy comparison (net of 10 bps per unit of signal change)\n",
          "Real = 8 walk-forward blocks 451–849 (models refitted per block on earlier rows, 1-row purge). "
          "MC = 200 independent simulated 50-day crash paths per block (3×/5× vol, injected −8% to −15% days), never used in training. "
@@ -278,9 +325,9 @@ def write_note(res, sub):
           "- Simulator design (3×/5× vol, 1–2 drops of −8% to −15%, burn-in from real training prices) is a design choice; MC Sharpe measures robustness, not real skill.",
           "- Rounds 1–2 showed no directional edge on real data; the model component is expected to be close to noise.",
           "- Costs assumed 10 bps per unit change for selection; 0 and 25 bps are in the JSON.",
-          "- The LSTM is not in this initial hybrid (runtime); planned for the improvement pass."]
-    NOTE.write_text("\n".join(L) + "\n")
+          "- Initial submission (v1, commit ea6c09d, no close features) scored 35.8 on the leaderboard."]
+    path.write_text("\n".join(L) + "\n")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
