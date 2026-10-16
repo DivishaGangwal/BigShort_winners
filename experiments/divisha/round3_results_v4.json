@@ -1,0 +1,71 @@
+{
+ "summary": {
+  "R0_v3": {
+   "real_mean_sharpe": 0.26635730715243994,
+   "real_blocks_positive": 5,
+   "real_mean_return": 0.006259617775471016,
+   "real_mean_mdd": 0.051887246301106305,
+   "real_max_mdd": 0.08841718969258594,
+   "real_mean_turnover": 17.477047116277205,
+   "real_cost_paid": 0.017477047116277206,
+   "mc_mean_sharpe": 0.7272438637184733,
+   "mc_median_mdd": 0.049857622334922254,
+   "mc_p90_mdd": 0.09757456219432117,
+   "mc_mean_return": 0.018071604152132978,
+   "mc_mean_turnover": 7.168446760540462,
+   "score": 0.4968005854354566,
+   "feasible": true
+  },
+  "R1_ema0.5": {
+   "real_mean_sharpe": 0.7535841274383807,
+   "real_blocks_positive": 4,
+   "real_mean_return": 0.015804475458583045,
+   "real_mean_mdd": 0.04417325752680876,
+   "real_max_mdd": 0.08311053890739073,
+   "real_mean_turnover": 7.253733507725647,
+   "real_cost_paid": 0.007253733507725646,
+   "mc_mean_sharpe": 1.02082706394875,
+   "mc_median_mdd": 0.03586936645540506,
+   "mc_p90_mdd": 0.07325217994836764,
+   "mc_mean_return": 0.01888560424867866,
+   "mc_mean_turnover": 3.0626994351599635,
+   "score": 0.8872055956935654,
+   "feasible": true
+  },
+  "R2_hysteresis0.05": {
+   "real_mean_sharpe": 0.27998986352621225,
+   "real_blocks_positive": 5,
+   "real_mean_return": 0.00640223674407675,
+   "real_mean_mdd": 0.05152641789609379,
+   "real_max_mdd": 0.08805776794550702,
+   "real_mean_turnover": 17.330985704021586,
+   "real_cost_paid": 0.017330985704021588,
+   "mc_mean_sharpe": 0.7273856587384636,
+   "mc_median_mdd": 0.0494410159206421,
+   "mc_p90_mdd": 0.09673700437356315,
+   "mc_mean_return": 0.018027030277541406,
+   "mc_mean_turnover": 6.845006779247382,
+   "score": 0.5036877611323379,
+   "feasible": true
+  }
+ },
+ "chosen": "R1_ema0.5",
+ "sha256": "5ee9e33154b9f30fb8b737bfe924694f6275cbad5da31e352318915d731abff0",
+ "final": {
+  "R0_v3": {
+   "turnover": 4.442200000000001,
+   "mean_abs": 0.057654000000000004,
+   "corr_with_v3": 1.0
+  },
+  "R1_ema0.5": {
+   "turnover": 1.6886,
+   "mean_abs": 0.03678,
+   "corr_with_v3": 0.8708305605415174
+  },
+  "R2_hysteresis0.05": {
+   "turnover": 3.9511999999999996,
+   "mean_abs": 0.05822600000000001,
+   "corr_with_v3": 0.980005872671005
+  }
+ }
+}

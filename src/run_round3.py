@@ -177,7 +177,7 @@ def main(argv=None):
     price = raw.set_index("timestamp")["close"]   # realized returns for backtests (labelled rows only)
     r_next = (price.shift(-1) / price - 1)   # NaN for t >= 850
 
-    real, mc, diag = {}, {}, {}
+    real, mc, diag, dump = {}, {}, {}, {}
     for i, (b0, b1) in enumerate(BLOCKS, start=1):
         train_ts = [t for t in sample if t <= b0 - 2]
         ev_ts = [t for t in sample if b0 <= t <= b1]
@@ -202,6 +202,10 @@ def main(argv=None):
                       "p10_return": float(np.quantile([q["total_return"] for q in per], 0.1)),
                       "mean_turnover": float(np.mean([q["turnover"] for q in per]))}
         mc[f"{b0}-{b1}"] = res
+        for k in POLICY_ORDER:   # per-day positions kept locally for policy refinements
+            dump[f"{b0}-{b1}__real__{k}"], dump[f"{b0}-{b1}__stress__{k}"] = pol[k], pol_s[k]
+        dump[f"{b0}-{b1}__real__ret"], dump[f"{b0}-{b1}__real__ts"] = r, np.asarray(ev_ts)
+        dump[f"{b0}-{b1}__stress__ret"], dump[f"{b0}-{b1}__stress__wid"] = st.ret, st.window_id
         diag[f"{b0}-{b1}"] = {
             "n_train": len(train_ts), "sim": h.sim_hashes,
             "real_p": [float(pr["p"].min()), float(pr["p"].max())],
@@ -251,6 +255,7 @@ def main(argv=None):
     pol = policies(pr["p"], base_pr, h.med_vol, h.max_vol)
     sig = np.clip(np.round(pol[chosen], 4), -1, 1)
     OUT.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(OUT / f"dev_positions_{tag}.npz", **dump)
     sub = OUT / f"submission_round3_signal_{tag}.csv"
     pd.DataFrame({"timestamp": pred_ts, "signal": sig}).to_csv(sub, index=False, lineterminator="\n")
     chk = pd.read_csv(sub)
