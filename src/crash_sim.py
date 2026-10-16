@@ -53,6 +53,7 @@ class SimSet:
     multiplier: np.ndarray
     sha256: str
     settings: dict
+    ret: np.ndarray | None = None   # simulated next-day simple return per row (for backtests)
 
 
 def _block_bootstrap(pool: np.ndarray, n: int, block: int, rng) -> np.ndarray:
@@ -73,7 +74,7 @@ def simulate_crashes(train_raw: pd.DataFrame, med_vol: float, vol_high_cut: floa
         raise ValueError("no high-volatility training rows to resample from")
     B, n_crash = cfg.burn_in, cfg.window + 1
 
-    Ws, ys, wid, mult = [], [], [], []
+    Ws, ys, wid, mult, rets = [], [], [], [], []
     for k in range(cfg.n_windows):
         s = int(rng.integers(B, len(tr)))
         burn = opens[s - B:s + 1]                       # B + 1 real prices ending at row s
@@ -115,6 +116,7 @@ def simulate_crashes(train_raw: pd.DataFrame, med_vol: float, vol_high_cut: floa
             raise ValueError("burn-in too short for the lookback window")
         Ws.append(arr[idx])
         ys.append((price[crash_orig + 1] > price[crash_orig]).astype(int))
+        rets.append(price[crash_orig + 1] / price[crash_orig] - 1)
         wid.append(np.full(cfg.window, k))
         mult.append(np.full(cfg.window, m))
 
@@ -125,4 +127,5 @@ def simulate_crashes(train_raw: pd.DataFrame, med_vol: float, vol_high_cut: floa
     settings = {**asdict(cfg), "hl_scale_a": a, "median_vol": med_vol, "vol_high_cut": vol_high_cut,
                 "n_high_vol_rows": int(len(hv)), "return_pool": "training open-to-open log returns",
                 "seed": [int(x) for x in np.atleast_1d(seed)]}
-    return SimSet(W=W, y=y, window_id=np.concatenate(wid), multiplier=np.concatenate(mult), sha256=h, settings=settings)
+    return SimSet(W=W, y=y, window_id=np.concatenate(wid), multiplier=np.concatenate(mult), sha256=h, settings=settings,
+                  ret=np.concatenate(rets))

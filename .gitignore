@@ -9,3 +9,6 @@ outputs/local/
 
 # Round-two source data: not committed until the user decides
 KESTREL_EM_D01_round2.csv
+
+# Round-three source data copy (identical to round two)
+KESTREL_EM_D01_round3.csv
