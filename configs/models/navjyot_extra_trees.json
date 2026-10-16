@@ -1,0 +1,31 @@
+{
+  "model_family": "ExtraTrees",
+  "owner": "Navjyot",
+  "modes": [
+    "standard",
+    "regime_aware",
+    "regime_aware_mc"
+  ],
+  "objective_formula": "L(theta) = (1 - lambda) * L_overall + lambda * max_g L_g + eta * Omega(theta)",
+  "params": {
+    "n_estimators": 300,
+    "max_depth": 5,
+    "min_samples_leaf": 20,
+    "max_features": 1.0,
+    "bootstrap": false,
+    "n_jobs": 1,
+    "random_state": 42
+  },
+  "dro_params": {
+    "lam": 0.5,
+    "eta_step": 0.1,
+    "n_dro_iters": 25,
+    "mc_samples": 50
+  },
+  "regime_definitions": {
+    "regime_0": "normal",
+    "regime_1": "high_volatility (volatility_20 >= 75th percentile)",
+    "regime_2": "high_rsi (rsi_14 >= 70 or 75th percentile)",
+    "regime_3": "stressed_order_flow (|order_flow| >= 75th percentile)"
+  }
+}
