@@ -1,0 +1,11 @@
+# Local environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated models, row-level predictions and submission files stay local
+outputs/local/
+
+# Round-two source data: not committed until the user decides
+KESTREL_EM_D01_round2.csv
