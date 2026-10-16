@@ -1,0 +1,25 @@
+{
+  "task_id": "divisha-round2-lr-lstm-crash",
+  "owner": "Divisha",
+  "seed": 42,
+  "lookback": 20,
+  "regimes": {"low_quantile": 0.25, "high_quantile": 0.75},
+  "logistic": {"C": 1.0, "solver": "lbfgs", "max_iter": 2000, "slsqp_maxiter": 1000, "slsqp_ftol": 1e-12, "feasibility_tol": 1e-6},
+  "lstm": {"hidden": 16, "layers": 1, "dropout": 0.2, "attention": "additive over 20 steps", "lr": 0.001,
+           "weight_decay": 0.001, "epochs": 150, "batch": "full", "seeds": [42, 43, 44], "max_threads": 4},
+  "arms": {
+    "B_lambdas": [0.25, 0.5, 0.75],
+    "C_weights": [1.5, 2, 3],
+    "C_weighted_rows": "high_vol or high_rsi (training rows)",
+    "D_sim_weight_fraction": 0.25,
+    "E_lambda": 0.5,
+    "E_groups": ["high_vol", "low_vol", "high_rsi", "low_rsi", "sim_crash"]
+  },
+  "simulator": {"n_windows": 200, "window": 50, "burn_in": 60, "block": 5, "multipliers": [3.0, 5.0],
+                "n_drops": [1, 2], "drop_range": [-0.15, -0.08], "gap_frac": 0.2,
+                "seeds": "SeedSequence [42, fold_index, 0] for augmentation and [42, fold_index, 1] for the stress set"},
+  "evaluation": {"threshold": 0.5, "reliability_bins": 5, "validation_weighting": "none"},
+  "selection": {"rule": "lowest mean-fold real validation log loss over the 7 development folds",
+                "tie": "equal when rounded to 4 decimals; simpler wins: baseline, then LR before LSTM, then arm A < B = C = D < E, then smaller lambda / w",
+                "baseline_wins": "stop before the reserved evaluation; no model is picked"}
+}
